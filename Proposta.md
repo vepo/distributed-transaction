@@ -1,4 +1,9 @@
-# Proposta
+# Proposta de Serviço com _Two-Phase Commit_
+
+UNIVERSIDADE TECNOLÓGICA FEDERAL DO PARANÁ
+Aluno: Victor Emanuel Perticarrari Osório
+Disciplina: Sistemas Distribuídos
+Professora: Ana Cristina Barreiras Kochem Vendramin
 
 Aplicação de compras online em que o sistema de pagamentos e o estoque são separados. Temos então ao menos 3 sistemas envolvidos na efetivação de uma compra: o carinho que irá receber todas as informações da compra, o estoque que precisa validar se os itens adquiridos tem em quantidades satisfatórias e o sistema de pagamento.
 
@@ -83,8 +88,8 @@ carrinho.estado ← FINALIZANDO
 transação.checkPoint(1)
 resposta ← Estoque.Reservar(transação, carrinho.itens)           // Encapsula os passos [2] e [3]
 
-SE (resposta.estado == SEM_ESTOQUE OU
-    resposta.estado = FALHA) ENTÃO
+SE (resposta.estado = SEM_ESTOQUE OU
+    resposta.estado ← FALHA) ENTÃO
     carrinho.estado ← INVÁLIDO
     Estoque.CancelarReserva(transação)
     transação.Finalizar()
@@ -94,8 +99,8 @@ SENÃO
 transação.checkPoint(2)
 resposta ← Pagamentos.Reservar(transação, carrinho.items)        // Encapsula os passos [4] e [5]
 
-SE (resposta.estado == SEM_SALDO OU
-    resposta.estado == FALHA) ENTÃO
+SE (resposta.estado = SEM_SALDO OU
+    resposta.estado = FALHA) ENTÃO
     carrinho.estado ← INVÁLIDO
     Pagamentos.CancelarReserva(transação)
     Estoque.CancelarReserva(transação)
@@ -106,7 +111,7 @@ SENÃO
 transação.checkPoint(3)
 resposta ← Pagamentos.Cobrar(transação)                          // Encapsula os passos [6] e [7]
 
-SE (resposta.estado == FALHA) ENTÃO
+SE (resposta.estado = FALHA) ENTÃO
     carrinho.estado ← INVÁLIDO
     Pagamentos.CancelarReserva(transação)
     Estoque.CancelarReserva(transação)
@@ -117,7 +122,7 @@ SENÃO
 transação.checkPoint(4)
 resposta ← Estoque.Despachar(transação)                          // Encapsula os passos [8] e [9]
 
-SE (resposta.estado == SUCESSO) ENTÃO
+SE (resposta.estado = SUCESSO) ENTÃO
     carrinho.estado ← FECHADO                                    // Passo [10]
     transação.Finalizar()
 SENÃO
@@ -131,21 +136,21 @@ O serviço de estoque funcionará como um **Countdown Latch**. Serão feitas res
 ```
 emEstoque ← TemEstoque(requisição.itens)
 
-SE (emEstoque == requisição.itens) ENTÃO
-    reserva = NovaReserva(transação)
+SE (emEstoque = requisição.itens) ENTÃO
+    reserva ← NovaReserva(transação)
     reserva.itens ← requisição.itens
     Bloqueia(reserva)                                            // Remove o item do estoque e adiciona como reserva
-    reserva.estado = RESERVADO                                   // as reservas devem ser processadas por ordem de chegada em fila
+    reserva.estado ← RESERVADO                                   // as reservas devem ser processadas por ordem de chegada em fila
     RETORNA PRODUTOS_RESERVADOS
 
 emReserva ← TemReservaPendente(requisição.itens, emEstoque)      // Deve calcular só os itens pendentes
 
-SE (emEstoque + emReserva == requisição.itens) ENTÃO
+SE (emEstoque + emReserva = requisição.itens) ENTÃO
     SE EsperaReservas(emReserva) ENTÃO                           // Operação Bloqueante
-        reserva = NovaReserva(transação)
+        reserva ← NovaReserva(transação)
         reserva.itens ← requisição.itens
         Bloqueia(reserva)                                        // Remove o item do estoque e adiciona como reserva
-        reserva.estado = RESERVADO                               // as reservas devem ser processadas por ordem de chegada em fila
+        reserva.estado ← RESERVADO                               // as reservas devem ser processadas por ordem de chegada em fila
         RETORNA PRODUTOS_RESERVADOS
     SENÃO
         RETORNA SEM_ESTOQUE
@@ -160,21 +165,21 @@ O sistema de pagamentos funciona de maneira similar, ele é um gateway para o si
 ```
 emConta ← TemSaldo(requisição.valorTotal)
 
-SE (emConta == requisição.valorTotal) ENTÃO
-    reserva = NovaReserva(transação)
+SE (emConta = requisição.valorTotal) ENTÃO
+    reserva ← NovaReserva(transação)
     reserva.valor ← requisição.valorTotal
     Bloqueia(reserva)                                            // Remove o item do estoque e adiciona como reserva
-    reserva.estado = RESERVADO                                   // as reservas devem ser processadas por ordem de chegada em fila
+    reserva.estado ← RESERVADO                                   // as reservas devem ser processadas por ordem de chegada em fila
     RETORNA SALDO_RESERVADO
 
 emReserva ← TemReservaPendente(requisição.valorTotal, emConta)   // Deve calcular só os itens pendentes
 
-SE (emConta + emReserva == requisição.valorTotal) ENTÃO
+SE (emConta + emReserva = requisição.valorTotal) ENTÃO
     SE EsperaReservas(emReserva) ENTÃO                           // Operação Bloqueante
-        reserva = NovaReserva(transação)
+        reserva ← NovaReserva(transação)
         reserva.valor ← requisição.valorTotal
         Bloqueia(reserva)                                        // Remove o item do estoque e adiciona como reserva
-        reserva.estado = RESERVADO                               // as reservas devem ser processadas por ordem de chegada em fila
+        reserva.estado ← RESERVADO                               // as reservas devem ser processadas por ordem de chegada em fila
         RETORNA SALDO_RESERVADO
     SENÃO
         RETORNA SEM_SALDO
@@ -242,13 +247,31 @@ SE (transação.checkPoint ≤ 3) ENTÃO
     RETORNA CANCELADA
 
 SE (transação.checkPoint = 4) ENTÃO
-    resposta ← Estoque.Despachar(transação)                          // Encapsula os passos [8] e [9]
+    resposta ← Estoque.Despachar(transação)                      // Encapsula os passos [8] e [9]
 
-    SE (resposta.estado == SUCESSO) ENTÃO
-        carrinho.estado ← FECHADO                                    // Passo [10]
+    SE (resposta.estado = SUCESSO) ENTÃO
+        carrinho.estado ← FECHADO                                // Passo [10]
         transação.Finalizar()
     SENÃO
         transação.retentar()
 SENÃO
-    transação.Finalizar()                                            // Falhou no último passo
+    transação.Finalizar()                                        // Falhou no último passo
 ```
+
+## Resposta
+
+### Como a propriedade de Atomicidade é garantida?
+
+A operação de Recuperar Transação pode retomar o ponto em que houve a falhar e decidir se faz o rollback ou finaliza a operação.
+
+### Como a propriedade de Isolamento é garantida?
+
+O isolamento é garantido através do bloqueio tipo **CountDown Latch**. Se há estoque, ele é reduzido e a transação segue. Mas não há estoque suficiente, o bloqueio é feito até que as operações possam ser finalizadas e a decisão se existe ou não estoque possa ser tomada.
+
+### Como a propriedade de Durabilidade é garantida?
+
+A Durabilidade é garantida pelo uso do Write-Ahead Log. Antes de qualquer operação, o estado é gravado, permitindo a operação recuperar estado. Se a escrita do Write-Ahead Log falhar a operação não é iniciada, o que significa que se houver uma falha,o Write-Ahead Log contém ao menos a última operação iniciada.
+
+### Como a propriedade de Consistência é garantida?
+
+A Consistência é garantida pela operação de Recuperar Transação associada ao **CountDown Latch**, pois o banco de dados poderá recuperar o estado anterior em caso de falha, mas evitando problemas de estoque ao não permitir que a operação continue enquanto houverem itens reservados.
