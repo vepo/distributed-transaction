@@ -32,10 +32,10 @@ Assim, uma compra pode ser efetivada pelos seguintes passos:
                  |                          |                                              |
                  |                          |       Despachar        |                     |
 [ 8]             |                          |----------------------->|                     |
-                 |                          |                        |                     |   
-                 |                          |          OK            |                     |  
+                 |                          |                        |                     |
+                 |                          |          OK            |                     |
 [ 9]             |                          |<-----------------------|                     |
-                 |                          |                        |                     | 
+                 |                          |                        |                     |
                  |        Sucesso           |                        |                     |
 [10]             |<-------------------------|                        |                     |
                  |                          |                        |                     |
@@ -68,7 +68,9 @@ Assim podemos falar que deverá existir uma transação para operação de **Efe
 
 ## Operações
 
-### 1. [Carrinho] Efetivar Compra
+### (1). [Carrinho] Efetivar Compra
+
+Essa é a operação principal de todo processo de compra. Ela deverá chamar cada operação e registrar os passos localmente. Se houver alguma falha na operação, ela pode ser recuperada posteriormente.
 
 ```
 carrinho ← (itens,valorTotal, estado)                            // Um carrinho tem uma lista de itens selecionados junto com a quantidade
@@ -79,9 +81,9 @@ carrinho.transação ← transação
 carrinho.estado ← FINALIZANDO
 
 transação.checkPoint(1)
-resposta ← Estoque.Reservar(transação, carrinho.items)           // Encapsula os passos [2] e [3]
+resposta ← Estoque.Reservar(transação, carrinho.itens)           // Encapsula os passos [2] e [3]
 
-SE (resposta.estado == SEM_ESTOQUE OU 
+SE (resposta.estado == SEM_ESTOQUE OU
     resposta.estado = FALHA) ENTÃO
     carrinho.estado ← INVÁLIDO
     Estoque.CancelarReserva(transação)
@@ -102,7 +104,7 @@ SENÃO
     carrinho.estado ← SALDO_RESERVADO
 
 transação.checkPoint(3)
-resposta ← Pagamentos.Cobrar(transação)
+resposta ← Pagamentos.Cobrar(transação)                          // Encapsula os passos [6] e [7]
 
 SE (resposta.estado == FALHA) ENTÃO
     carrinho.estado ← INVÁLIDO
@@ -113,13 +115,140 @@ SENÃO
     carrinho.estado ← PAGO
 
 transação.checkPoint(4)
-resposta ← Estoque.Despachar(transação)
+resposta ← Estoque.Despachar(transação)                          // Encapsula os passos [8] e [9]
 
 SE (resposta.estado == SUCESSO) ENTÃO
-    carrinho.estado ← FECHADO
+    carrinho.estado ← FECHADO                                    // Passo [10]
     transação.Finalizar()
 SENÃO
     transação.retentar()
 ```
 
+### (2). [Estoque] Reservar Produtos
 
+O serviço de estoque funcionará como um **Countdown Latch**. Serão feitas reservas até não haver mais o produto em estoque, quando uma reserva é liberada ou efetivada a próxima na fila pode ser processado.
+
+```
+emEstoque ← TemEstoque(requisição.itens)
+
+SE (emEstoque == requisição.itens) ENTÃO
+    reserva = NovaReserva(transação)
+    reserva.itens ← requisição.itens
+    Bloqueia(reserva)                                            // Remove o item do estoque e adiciona como reserva
+    reserva.estado = RESERVADO                                   // as reservas devem ser processadas por ordem de chegada em fila
+    RETORNA PRODUTOS_RESERVADOS
+
+emReserva ← TemReservaPendente(requisição.itens, emEstoque)      // Deve calcular só os itens pendentes
+
+SE (emEstoque + emReserva == requisição.itens) ENTÃO
+    SE EsperaReservas(emReserva) ENTÃO                           // Operação Bloqueante
+        reserva = NovaReserva(transação)
+        reserva.itens ← requisição.itens
+        Bloqueia(reserva)                                        // Remove o item do estoque e adiciona como reserva
+        reserva.estado = RESERVADO                               // as reservas devem ser processadas por ordem de chegada em fila
+        RETORNA PRODUTOS_RESERVADOS
+    SENÃO
+        RETORNA SEM_ESTOQUE
+SENÃO
+    RETORNA SEM_ESTOQUE
+```
+
+### (3). [Pagamentos] Reservar Saldo
+
+O sistema de pagamentos funciona de maneira similar, ele é um gateway para o sistema bancário e reservas podem ser feitas.
+
+```
+emConta ← TemSaldo(requisição.valorTotal)
+
+SE (emConta == requisição.valorTotal) ENTÃO
+    reserva = NovaReserva(transação)
+    reserva.valor ← requisição.valorTotal
+    Bloqueia(reserva)                                            // Remove o item do estoque e adiciona como reserva
+    reserva.estado = RESERVADO                                   // as reservas devem ser processadas por ordem de chegada em fila
+    RETORNA SALDO_RESERVADO
+
+emReserva ← TemReservaPendente(requisição.valorTotal, emConta)   // Deve calcular só os itens pendentes
+
+SE (emConta + emReserva == requisição.valorTotal) ENTÃO
+    SE EsperaReservas(emReserva) ENTÃO                           // Operação Bloqueante
+        reserva = NovaReserva(transação)
+        reserva.valor ← requisição.valorTotal
+        Bloqueia(reserva)                                        // Remove o item do estoque e adiciona como reserva
+        reserva.estado = RESERVADO                               // as reservas devem ser processadas por ordem de chegada em fila
+        RETORNA SALDO_RESERVADO
+    SENÃO
+        RETORNA SEM_SALDO
+SENÃO
+    RETORNA SEM_SALDO
+```
+
+### (4). [Pagamentos] Cobrar
+
+A cobrança deve recuperar a reserva através da transação e efetivar ela.
+
+```
+reserva ← EncontraReserva(transação)
+EfetivaCobrança(reserva)
+LiberaBloqueios(reserva)
+RETORNA SUCESSO
+```
+
+### (5). [Estoque] Despachar Produtos
+
+
+O despacho dos produtos deve recuperar a reserva através da transação e liberar para entrega.
+
+```
+reserva ← EncontraReserva(transação)
+LiberarParaEntrega(reserva)
+LiberaBloqueios(reserva)
+RETORNA SUCESSO
+```
+
+### [Estoque] Cancelar Transação
+
+Para cancelar a transação, deve-se verificar se existe uma reserva e retornar os itens para o estoque.
+
+```
+reserva ← EncontraReserva(transação)
+RetornaParaEstoque(reserva)
+LiberaBloqueios(reserva)
+RETORNA CANCELADO
+```
+
+### [Pagamentos] Cancelar Transação
+
+Para cancelar a transação, deve-se verificar se existe uma reserva e retorna o valor para saldo.
+
+```
+reserva ← EncontraReserva(transação)
+RetornaParaSaldo(reserva)
+LiberaBloqueios(reserva)
+RETORNA CANCELADO
+```
+
+### [Carrinho] Recuperar Transação
+
+A tentativa de recuperação do estado da transação é feito sempre que o serviço de Carrinho falhar. Como as transações são salvas em um arquivo de Write-Ahead Log, o processo deve ler todas as operações existente (não arquivadas).
+
+```
+transação ← PróximaTransação(log)                                // Recupera o último estado da transação armazenado
+SE (transação.checkPoint ≤ 2) ENTÃO
+    Estoque.CancelarReserva(transação)
+
+SE (transação.checkPoint ≤ 3) ENTÃO
+    Pagamentos.CancelarReserva(transação)
+    transação.Finalizar()
+    RETORNA CANCELADA
+
+SE (transação.checkPoint = 4) ENTÃO
+    resposta ← Estoque.Despachar(transação)                          // Encapsula os passos [8] e [9]
+
+    SE (resposta.estado == SUCESSO) ENTÃO
+        carrinho.estado ← FECHADO                                    // Passo [10]
+        transação.Finalizar()
+    SENÃO
+        transação.retentar()
+SENÃO
+    transação.Finalizar()                                            // Falhou no último passo
+```
