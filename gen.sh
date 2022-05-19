@@ -1,0 +1,1 @@
+pandoc Proposta.md -o transacoes.html --css=style.css
